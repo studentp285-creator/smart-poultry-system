@@ -14,6 +14,20 @@ from datetime import datetime, timezone
 from firebase_config import get_firebase
 
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def email_is_registered(email: str) -> bool:
+    """True if a Firebase Auth account exists for this email. Admin SDK lookups
+    are not subject to the client SDK's email-enumeration protection."""
+    get_firebase()  # ensure the Firebase app is initialized
+    from firebase_admin import auth as fb_auth
+    try:
+        fb_auth.get_user_by_email(email)
+        return True
+    except fb_auth.UserNotFoundError:
+        return False
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -54,28 +68,45 @@ def save_seed_readings(readings: list[dict]):
         db.reference('poultry/readings/latest').set(readings[-1])
 
 
+# ── Thresholds ────────────────────────────────────────────────────────────────
+
+DEFAULT_THRESHOLDS = {
+    'temperature': {'warn_high': 28.0, 'crit_high': 32.0, 'warn_low': 18.0, 'crit_low': 10.0},
+    'humidity':    {'warn_high': 65.0, 'crit_high': 75.0, 'warn_low': 50.0, 'crit_low': 40.0},
+    'water_level': {'warn_low': 30.0, 'crit_low': 15.0},
+    'feed_level':  {'warn_low': 30.0, 'crit_low': 15.0},
+}
+
+def get_thresholds() -> dict:
+    db = get_firebase()
+    return db.reference('poultry/thresholds').get() or DEFAULT_THRESHOLDS
+
+def set_thresholds(thresholds: dict):
+    db = get_firebase()
+    db.reference('poultry/thresholds').set(thresholds)
+
+
+# ── Sensor states ─────────────────────────────────────────────────────────────
+
+def get_sensor_states() -> dict:
+    db = get_firebase()
+    return db.reference('poultry/sensor_states').get() or {}
+
+def set_sensor_states(states: dict):
+    db = get_firebase()
+    db.reference('poultry/sensor_states').set(states)
+
+
 # ── Alerts ────────────────────────────────────────────────────────────────────
 
-ALERT_COOLDOWN_MINUTES = 30
-
-def create_alert(alert_type: str, severity: str, message: str) -> str:
+def create_alert(sensor: str, severity: str, message: str) -> str:
     db = get_firebase()
-    # Check cooldown — don't create duplicate alert within cooldown period
-    existing = db.reference('poultry/alerts').order_by_child('timestamp').limit_to_last(50).get()
-    if existing:
-        from datetime import timedelta
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=ALERT_COOLDOWN_MINUTES)
-        for v in existing.values():
-            if (v.get('alert_type') == alert_type and
-                v.get('severity') == severity and
-                datetime.fromisoformat(v.get('timestamp', '1970-01-01T00:00:00+00:00')) > cutoff):
-                return ''  # skip — same alert already exists within cooldown
     ref = db.reference('poultry/alerts').push({
-        'alert_type': alert_type,
-        'severity':   severity,
-        'message':    message,
-        'is_read':    False,
-        'timestamp':  _now(),
+        'sensor':    sensor,
+        'severity':  severity,
+        'message':   message,
+        'is_read':   False,
+        'timestamp': _now(),
     })
     return ref.key
 
@@ -104,6 +135,20 @@ def mark_all_alerts_read():
     db.reference('poultry/alerts').update(updates)
 
 
+def delete_read_alerts() -> int:
+    """Delete only alerts that have been marked as read. Returns count deleted."""
+    db   = get_firebase()
+    data = db.reference('poultry/alerts').get()
+    if not data:
+        return 0
+    deleted = 0
+    for key, alert in data.items():
+        if alert.get('is_read', False):
+            db.reference(f'poultry/alerts/{key}').delete()
+            deleted += 1
+    return deleted
+
+
 def delete_all_alerts():
     db = get_firebase()
     db.reference('poultry/alerts').delete()
@@ -112,6 +157,17 @@ def delete_all_alerts():
 def get_unread_count() -> int:
     alerts = get_alerts(200)
     return sum(1 for a in alerts if not a.get('is_read', False))
+
+
+# ── App settings (WhatsApp number, etc.) ──────────────────────────────────────
+
+def get_app_settings() -> dict:
+    db = get_firebase()
+    return db.reference('poultry/app_settings').get() or {}
+
+def set_app_settings(settings: dict):
+    db = get_firebase()
+    db.reference('poultry/app_settings').set(settings)
 
 
 # ── Ventilation ───────────────────────────────────────────────────────────────

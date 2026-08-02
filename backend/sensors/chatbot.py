@@ -19,8 +19,8 @@ IMPORTANT RULES:
 - Never mention who built or developed this system.
 - If asked who made this or who you are, simply say you are the built-in assistant for this poultry monitoring system.
 - Speak as if this is a fully professional, commercial poultry monitoring product.
-- Your ONLY job is to answer questions about this poultry system. Do NOT answer anything outside this topic.
-- If someone asks something unrelated, politely decline and redirect them to ask about the poultry system.
+- Always respond warmly and naturally to greetings such as "hello", "hi", "good morning", "how are you" etc. — reply in a friendly way and invite the farmer to ask about their farm.
+- Your main job is to answer questions about this poultry system. For unrelated questions, politely redirect the farmer back to farm topics.
 
 == About the system ==
 - ESP32 microcontroller reads sensors every 30 seconds and POSTs to a Django REST API.
@@ -29,22 +29,20 @@ IMPORTANT RULES:
 - Firebase Realtime Database stores all sensor data, alerts, and ventilation state.
 
 == Sensors and GPIO ==
-- DHT11 (GPIO 4): Temperature & Humidity
-- MQ2 Gas Sensor (GPIO 34): Gas / Ammonia level (ppm)
-- Water level sensor (GPIO 35): Water level (0-100%)
-- HC-SR04 ultrasonic (TRIG GPIO 5, ECHO GPIO 18): Feed level (0-100%)
-- Servo motor (GPIO 19): Controls ventilation window (0 deg = closed, 90 deg = open)
-- Buzzer (GPIO 21): Alarm for critical conditions
+- DHT22 (GPIO 4): Temperature & Humidity
+- Water level sensor (GPIO 35, ADC1): Water level (0-100%)
+- HC-SR04 ultrasonic (TRIG GPIO 18, ECHO GPIO 19): Feed level (0-100%)
+- Servo motor (GPIO 21, PWM): Controls ventilation window (0 deg = closed, 90 deg = open)
+- Buzzer (GPIO 22): Alarm for critical conditions
 
 == Thresholds ==
 Temperature: Warning >28°C or <18°C | Critical >32°C or <10°C
 Humidity: Warning >65% or <50% | Critical >75% or <40%
-Gas (ammonia): Warning >25 ppm | Critical >50 ppm
 Water level: Warning <30% | Critical <15%
 Feed level: Warning <30% | Critical <15%
 
 == Ventilation logic ==
-- Opens automatically when temperature >=28°C, humidity >=65%, or gas >=25 ppm
+- Opens automatically when temperature >=28°C or humidity >=65%
 - Closes automatically when ALL conditions return to safe levels (only if auto-opened)
 - Manual override via dashboard Open/Close buttons; manual state is always respected
 - Shows Automatic or Manual label with the reason on the dashboard
@@ -73,7 +71,6 @@ def _fmt_sensor_context(data) -> str:
 
     t = data.get('temperature')
     h = data.get('humidity')
-    g = data.get('gas_level')
     w = data.get('water_level')
     f = data.get('feed_level')
 
@@ -88,9 +85,6 @@ def _fmt_sensor_context(data) -> str:
         elif h >= 70: issues.append("Humidity WARNING - elevated")
         elif h <= 30: issues.append("Humidity CRITICAL - too dry")
         elif h <= 40: issues.append("Humidity WARNING - slightly dry")
-    if isinstance(g, (int, float)):
-        if g >= 100:  issues.append("Gas CRITICAL - dangerous level")
-        elif g >= 50: issues.append("Gas WARNING - elevated")
     if isinstance(w, (int, float)):
         if w <= 20:   issues.append("Water CRITICAL - refill now")
         elif w <= 40: issues.append("Water WARNING - getting low")
@@ -101,7 +95,6 @@ def _fmt_sensor_context(data) -> str:
     lines = [
         f"Temperature : {fmt(t, 'C')}",
         f"Humidity    : {fmt(h, '%')}",
-        f"Gas level   : {fmt(g, ' ppm')}",
         f"Water level : {fmt(w, '%')}",
         f"Feed level  : {fmt(f, '%')}",
     ]
@@ -122,14 +115,12 @@ def _fallback(message: str) -> str:
         return "Optimal temperature: 18–28°C. Above 32°C is critical and triggers auto-ventilation and the buzzer."
     if any(w in msg for w in ['humidity']):
         return "Optimal humidity: 50–65%. Above 75% is critical and triggers auto-ventilation."
-    if any(w in msg for w in ['gas', 'ammonia']):
-        return "Gas should be below 25 ppm. Above 50 ppm is critical and triggers the buzzer."
     if any(w in msg for w in ['water']):
         return "Water below 15% is critical — refill immediately. Warning starts at 30%."
     if any(w in msg for w in ['feed', 'food']):
         return "Feed below 15% is critical — refill immediately. Warning starts at 30%."
     if any(w in msg for w in ['ventil', 'window']):
-        return "Windows open automatically when temperature >=28°C, humidity >=65%, or gas >=25 ppm."
+        return "Windows open automatically when temperature >=28°C or humidity >=65%."
     return "I'm your Smart Poultry Assistant. Ask me about sensor readings, ventilation, alerts, or ESP32 setup!"
 
 

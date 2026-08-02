@@ -1,8 +1,10 @@
 import random
-import sys, os
+import os
+import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from datetime import datetime, timezone, timedelta
+from functools import wraps
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -10,6 +12,30 @@ from rest_framework import status
 import firebase_service as fs
 from .decision_support import analyze_reading, get_recommendations
 from .chatbot import get_response as chatbot_reply
+try:
+    import whatsapp_service as _wa
+except Exception:
+    _wa = None
+
+# ── ESP32 device authentication ───────────────────────────────────────────────
+# Set ESP32_API_KEY in backend/.env to enforce authentication.
+# If left empty the check is skipped (safe for local development).
+
+_DEVICE_KEY = os.environ.get('ESP32_API_KEY', '').strip()
+
+def require_device_key(view_func):
+    """Decorator: reject POST/PUT requests that don't carry the correct X-API-Key header."""
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        if _DEVICE_KEY and request.method in ('POST', 'PUT', 'PATCH'):
+            incoming = request.headers.get('X-API-Key', '')
+            if incoming != _DEVICE_KEY:
+                return Response(
+                    {'error': 'Invalid or missing device API key.'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+        return view_func(request, *args, **kwargs)
+    return wrapper
 
 
 def _now_iso(offset_hours=0):
@@ -18,6 +44,7 @@ def _now_iso(offset_hours=0):
 
 
 @api_view(['GET', 'POST'])
+@require_device_key
 def sensor_readings(request):
     if request.method == 'GET':
         limit = int(request.query_params.get('limit', 50))
@@ -25,7 +52,9 @@ def sensor_readings(request):
         return Response(readings)
 
     # POST — called by ESP32 with real sensor data
-    required = ['temperature', 'humidity', 'gas_level', 'water_level', 'feed_level']
+    # Note: the ESP32 firmware still sends gas_level in its payload — it's simply
+    # ignored here rather than requiring a firmware re-upload to drop the field.
+    required = ['temperature', 'humidity', 'water_level', 'feed_level']
     data = request.data
     missing = [f for f in required if f not in data]
     if missing:
@@ -75,7 +104,6 @@ def simulate_reading(request):
     reading = {
         'temperature': round(random.uniform(18, 40), 1),
         'humidity':    round(random.uniform(30, 90), 1),
-        'gas_level':   round(random.uniform(10, 130), 1),
         'water_level': round(random.uniform(5, 100), 1),
         'feed_level':  round(random.uniform(5, 100), 1),
     }
@@ -103,7 +131,6 @@ def seed_data(request):
         readings.append({
             'temperature': round(random.uniform(20, 38), 1),
             'humidity':    round(random.uniform(35, 85), 1),
-            'gas_level':   round(random.uniform(15, 120), 1),
             'water_level': round(max(10, 100 - i * 1.5 + random.uniform(-5, 5)), 1),
             'feed_level':  round(max(10, 100 - i * 1.2 + random.uniform(-5, 5)), 1),
             'timestamp':   _now_iso(offset_hours=48 - i),
@@ -135,6 +162,73 @@ def mark_all_read(request):
 def delete_all_alerts(request):
     fs.delete_all_alerts()
     return Response({'status': 'all alerts deleted'})
+
+
+@api_view(['DELETE'])
+def delete_read_alerts(request):
+    deleted = fs.delete_read_alerts()
+    return Response({'status': 'read alerts deleted', 'deleted': deleted})
+
+
+@api_view(['POST'])
+def check_email(request):
+    """Used by the forgot-password page to tell an unregistered email apart
+    from one Firebase's client SDK silently no-ops for (enumeration protection)."""
+    email = (request.data.get('email') or '').strip().lower()
+    if not email:
+        return Response({'error': 'No email provided'}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({'registered': fs.email_is_registered(email)})
+
+
+@api_view(['GET'])
+def chat_status(request):
+    """Returns whether the Gemini AI backend is configured and reachable."""
+    key_set = bool(os.environ.get('GEMINI_API_KEY', '').strip())
+    return Response({'ai_enabled': key_set})
+
+
+@api_view(['GET'])
+def get_thresholds(request):
+    return Response(fs.get_thresholds())
+
+@api_view(['POST'])
+def update_thresholds(request):
+    fs.set_thresholds(request.data)
+    return Response({'status': 'thresholds updated'})
+
+
+@api_view(['GET', 'POST'])
+def app_settings(request):
+    if request.method == 'GET':
+        s = fs.get_app_settings()
+        return Response({
+            'whatsapp_enabled':  s.get('whatsapp_enabled', False),
+            'whatsapp_number':   s.get('whatsapp_number', ''),
+            'twilio_configured': bool(_wa and _wa.is_configured()),
+        })
+    data = {
+        'whatsapp_enabled': bool(request.data.get('whatsapp_enabled', False)),
+        'whatsapp_number':  str(request.data.get('whatsapp_number', '')).strip(),
+    }
+    fs.set_app_settings(data)
+    return Response({'status': 'saved'})
+
+
+@api_view(['POST'])
+def test_whatsapp(request):
+    if not _wa or not _wa.is_configured():
+        return Response({'error': 'WhatsApp alerts are not available right now'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    settings = fs.get_app_settings()
+    number = settings.get('whatsapp_number', '').strip()
+    if not number:
+        return Response({'error': 'No WhatsApp number saved — enter your number and save first'}, status=status.HTTP_400_BAD_REQUEST)
+    ok, detail = _wa.send(
+        '🧪 *Test message from Smart Poultry Monitor*\n\nWhatsApp alerts are working correctly! You will receive notifications here when critical conditions are detected.',
+        number,
+    )
+    if ok:
+        return Response({'status': 'sent', 'sid': detail})
+    return Response({'error': 'Could not send message — please check the number and try again'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])

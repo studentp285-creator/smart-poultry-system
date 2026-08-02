@@ -21,4 +21,15 @@ export const controlVentilation = (action) => api.post('/ventilation/control/', 
 
 export const sendChatMessage = (message, history = []) => api.post('/chat/', { message, history })
 
+export const getThresholds = () => api.get('/thresholds/')
+export const updateThresholds = (data) => api.post('/thresholds/update/', data)
+
+export const deleteReadAlerts = () => api.delete('/alerts/delete-read/')
+export const getChatStatus    = () => api.get('/chat/status/')
+
+export const checkEmailRegistered = (email) => api.post('/auth/check-email/', { email })
+
+export const getAppSettings    = ()     => api.get('/settings/')
+export const updateAppSettings = (data) => api.post('/settings/', data)
+
 export default api

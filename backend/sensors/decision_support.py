@@ -1,104 +1,271 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import firebase_service as fs
+try:
+    import whatsapp_service as _wa
+except Exception:
+    _wa = None
+from datetime import datetime, timezone, timedelta
 
-THRESHOLDS = {
-    'temperature': {'warn_high': 28.0, 'crit_high': 32.0, 'warn_low': 18.0, 'crit_low': 10.0},
-    'humidity':    {'warn_high': 65.0, 'crit_high': 75.0, 'warn_low': 50.0, 'crit_low': 40.0},
-    'gas_level':   {'warn': 25.0,  'crit': 50.0},
-    'water_level': {'warn_low': 30.0, 'crit_low': 15.0},
-    'feed_level':  {'warn_low': 30.0, 'crit_low': 15.0},
+CRITICAL_REMINDER_MINUTES = 30
+
+# A sensor must improve this much past a threshold before its state steps down.
+# Prevents floods from values oscillating near a boundary.
+HYSTERESIS = {
+    'temperature': 1.5,   # °C
+    'humidity':    2.0,   # %
+    'water_level': 2.0,   # %
+    'feed_level':  2.0,   # %
+}
+
+_STATE_RANK = {'good': 0, 'warning': 1, 'critical': 2}
+
+_LABELS = {
+    'temperature': 'Temperature',
+    'humidity':    'Humidity',
+    'water_level': 'Water Level',
+    'feed_level':  'Feed Level',
+}
+
+_UNITS = {
+    'temperature': '°C',
+    'humidity':    '%',
+    'water_level': '%',
+    'feed_level':  '%',
 }
 
 
+# ── State classification ───────────────────────────────────────────────────────
+
+def _raw_state(sensor, value, thresholds) -> str:
+    t = thresholds[sensor]
+    if sensor == 'temperature':
+        if value >= t['crit_high'] or value <= t['crit_low']: return 'critical'
+        if value >= t['warn_high'] or value <= t['warn_low']: return 'warning'
+    elif sensor == 'humidity':
+        if value >= t['crit_high'] or value <= t['crit_low']: return 'critical'
+        if value >= t['warn_high'] or value <= t['warn_low']: return 'warning'
+    elif sensor in ('water_level', 'feed_level'):
+        if value <= t['crit_low']: return 'critical'
+        if value <= t['warn_low']: return 'warning'
+    return 'good'
+
+
+def _sensor_state(sensor, value, thresholds, prev_state='good') -> str:
+    """
+    Effective state with hysteresis on recovery.
+    Worsening is immediate; improvement requires clearing the threshold by HYSTERESIS first.
+    """
+    raw = _raw_state(sensor, value, thresholds)
+    if _STATE_RANK[raw] >= _STATE_RANK[prev_state]:
+        return raw
+
+    t  = thresholds[sensor]
+    hy = HYSTERESIS[sensor]
+
+    if sensor in ('temperature', 'humidity'):
+        if prev_state == 'critical':
+            if not (value > t['crit_low'] + hy and value < t['crit_high'] - hy):
+                return 'critical'
+            return 'good' if (value > t['warn_low'] + hy and value < t['warn_high'] - hy) else 'warning'
+        else:
+            return 'good' if (value > t['warn_low'] + hy and value < t['warn_high'] - hy) else 'warning'
+
+    else:  # water_level, feed_level
+        if prev_state == 'critical':
+            if value <= t['crit_low'] + hy: return 'critical'
+            return 'warning' if value <= t['warn_low'] + hy else 'good'
+        else:
+            return 'good' if value > t['warn_low'] + hy else 'warning'
+
+
+def _should_alert(sensor, new_state, prev_info: dict) -> bool:
+    prev_state = prev_info.get('state', 'good')
+
+    if new_state == 'good':
+        return prev_state in ('warning', 'critical')
+
+    if new_state != prev_state:
+        return True
+
+    if new_state == 'critical':
+        last_ts = prev_info.get('last_alert_ts')
+        if not last_ts:
+            return True
+        try:
+            last = datetime.fromisoformat(last_ts)
+            return datetime.now(timezone.utc) - last > timedelta(minutes=CRITICAL_REMINDER_MINUTES)
+        except ValueError:
+            return True
+
+    return False
+
+
+# ── Alert bundling ────────────────────────────────────────────────────────────
+
+def _detail(sensor, state, value, thr) -> str:
+    """One-line summary of a sensor's condition for use inside a bundle."""
+    unit = _UNITS[sensor]
+    v    = f"{value:.1f}{unit}"
+
+    if state == 'critical':
+        if sensor == 'temperature':
+            return f"{v} — {'dangerously hot, open windows now' if value >= thr['crit_high'] else 'dangerously cold, add heating'}"
+        if sensor == 'humidity':
+            return f"{v} — {'extremely humid, disease risk' if value >= thr['crit_high'] else 'dangerously dry, use misters'}"
+        if sensor == 'water_level':
+            return f"{v} — critically low, refill troughs now"
+        if sensor == 'feed_level':
+            return f"{v} — critically low, refill feeders now"
+
+    if state == 'warning':
+        if sensor == 'temperature':
+            return f"{v} — {'too warm' if value >= thr['warn_high'] else 'too cool'}"
+        if sensor == 'humidity':
+            return f"{v} — {'too humid' if value >= thr['warn_high'] else 'too dry'}"
+        if sensor == 'water_level':
+            return f"{v} — getting low, plan to refill"
+        if sensor == 'feed_level':
+            return f"{v} — getting low, plan to refill"
+
+    # good / recovery
+    return f"{value:.1f}{unit} — back to normal"
+
+
+def _build_bundle(items: list, level: str) -> tuple[str, str]:
+    """
+    Bundle multiple sensor events into one alert.
+    items: list of (sensor_key, detail_string, label_string)
+    Returns (sensor_field_for_db, message).
+    """
+    sensor_field = items[0][0] if len(items) == 1 else 'multiple'
+
+    if len(items) == 1:
+        sensor, detail, label = items[0]
+        if level == 'critical':
+            return sensor_field, f"CRITICAL — {label}: {detail}. Immediate action required."
+        if level == 'warning':
+            return sensor_field, f"WARNING — {label}: {detail}."
+        return sensor_field, f"Recovered — {label}: {detail}."
+
+    # Multiple sensors — bulleted list
+    bullets = '\n'.join(f"• {label}: {detail}" for _, detail, label in items)
+
+    if level == 'critical':
+        msg = (
+            f"CRITICAL — {len(items)} sensors need immediate attention:\n"
+            f"{bullets}\n"
+            f"Act now to protect your flock."
+        )
+    elif level == 'warning':
+        msg = (
+            f"WARNING — {len(items)} sensors outside safe range:\n"
+            f"{bullets}"
+        )
+    else:
+        msg = (
+            f"Recovered — {len(items)} sensors returned to safe levels:\n"
+            f"{bullets}"
+        )
+
+    return sensor_field, msg
+
+
+# ── Main analysis entry point ─────────────────────────────────────────────────
+
 def analyze_reading(reading: dict) -> dict:
-    """
-    Analyze a sensor reading dict, write alerts to Firebase.
-    Returns { open_windows, trigger_buzzer, alerts_created, reason }.
-    'reason' is a human-readable string of which sensors triggered ventilation.
-    """
-    open_windows = False
+    open_windows   = False
     trigger_buzzer = False
     alerts_created = 0
-    reasons = []  # tracks which sensors triggered auto-ventilation
+    reasons        = []
 
     t = reading.get('temperature', 0)
     h = reading.get('humidity', 0)
-    g = reading.get('gas_level', 0)
     w = reading.get('water_level', 100)
     f = reading.get('feed_level', 100)
 
-    # Temperature
-    if t >= THRESHOLDS['temperature']['crit_high']:
-        fs.create_alert('temperature', 'critical',
-            f"CRITICAL: Temperature is {t:.1f}°C — far above safe range. Open windows immediately.")
-        open_windows = True; trigger_buzzer = True; alerts_created += 1
-        reasons.append(f"Temperature critical ({t:.1f}°C)")
-    elif t >= THRESHOLDS['temperature']['warn_high']:
-        fs.create_alert('temperature', 'warning',
-            f"WARNING: Temperature is {t:.1f}°C — above normal (18–28°C). Improve ventilation.")
-        open_windows = True; alerts_created += 1
-        reasons.append(f"Temperature high ({t:.1f}°C)")
-    elif t <= THRESHOLDS['temperature']['crit_low']:
-        fs.create_alert('temperature', 'critical',
-            f"CRITICAL: Temperature is {t:.1f}°C — dangerously cold. Add heating immediately.")
-        trigger_buzzer = True; alerts_created += 1
-    elif t <= THRESHOLDS['temperature']['warn_low']:
-        fs.create_alert('temperature', 'warning',
-            f"WARNING: Temperature is {t:.1f}°C — below normal (18–28°C). Check heating.")
+    THRESHOLDS  = fs.get_thresholds()
+    prev_states = fs.get_sensor_states()
+    new_states  = {}
+    now_ts      = datetime.now(timezone.utc).isoformat()
+
+    sensors = [
+        ('temperature', t),
+        ('humidity',    h),
+        ('water_level', w),
+        ('feed_level',  f),
+    ]
+
+    # Buckets for bundling — each entry: (sensor_key, detail_str, label_str)
+    critical_bucket  = []
+    warning_bucket   = []
+    recovered_bucket = []
+
+    for sensor, value in sensors:
+        prev_info  = prev_states.get(sensor, {'state': 'good'})
+        prev_state = prev_info.get('state', 'good')
+        new_state  = _sensor_state(sensor, value, THRESHOLDS, prev_state)
+        thr        = THRESHOLDS[sensor]
+
+        # ── Ventilation / buzzer decisions ────────────────────────────────────
+        if sensor == 'temperature':
+            if new_state == 'critical':
+                open_windows = True; trigger_buzzer = True
+                reasons.append(f"Temp critical ({value:.1f}°C)")
+            elif new_state == 'warning':
+                open_windows = True
+                reasons.append(f"Temp elevated ({value:.1f}°C)")
+        elif sensor == 'humidity':
+            if new_state == 'critical':
+                open_windows = True; trigger_buzzer = True
+                reasons.append(f"Humidity critical ({value:.1f}%)")
+            elif new_state == 'warning':
+                open_windows = True
+                reasons.append(f"Humidity elevated ({value:.1f}%)")
+        elif sensor in ('water_level', 'feed_level'):
+            if new_state == 'critical':
+                trigger_buzzer = True
+
+        # ── Collect alert candidates ──────────────────────────────────────────
+        if _should_alert(sensor, new_state, prev_info):
+            entry = (sensor, _detail(sensor, new_state, value, thr), _LABELS[sensor])
+            if new_state == 'critical':
+                critical_bucket.append(entry)
+            elif new_state == 'warning':
+                warning_bucket.append(entry)
+            else:
+                recovered_bucket.append(entry)
+
+            new_states[sensor] = {'state': new_state, 'last_alert_ts': now_ts}
+        else:
+            new_states[sensor] = {'state': new_state, 'last_alert_ts': prev_info.get('last_alert_ts')}
+
+    # ── Emit at most 3 bundled alerts per reading cycle ───────────────────────
+    if critical_bucket:
+        sensor_field, msg = _build_bundle(critical_bucket, 'critical')
+        fs.create_alert(sensor_field, 'critical', msg)
+        alerts_created += 1
+        # WhatsApp notification for critical alerts
+        if _wa and _wa.is_configured():
+            try:
+                app_cfg = fs.get_app_settings()
+                if app_cfg.get('whatsapp_enabled') and app_cfg.get('whatsapp_number'):
+                    wa_body = f"🚨 *Smart Poultry Alert*\n\n{msg}\n\n_Sent from your Smart Poultry Monitor_"
+                    _wa.send(wa_body, app_cfg['whatsapp_number'])
+            except Exception as exc:
+                print(f'[WhatsApp] Notification failed: {exc}')
+
+    if warning_bucket:
+        sensor_field, msg = _build_bundle(warning_bucket, 'warning')
+        fs.create_alert(sensor_field, 'warning', msg)
         alerts_created += 1
 
-    # Humidity
-    if h >= THRESHOLDS['humidity']['crit_high']:
-        fs.create_alert('humidity', 'critical',
-            f"CRITICAL: Humidity is {h:.1f}% — extremely high. Risk of disease. Ventilate urgently.")
-        open_windows = True; trigger_buzzer = True; alerts_created += 1
-        reasons.append(f"Humidity critical ({h:.1f}%)")
-    elif h >= THRESHOLDS['humidity']['warn_high']:
-        fs.create_alert('humidity', 'warning',
-            f"WARNING: Humidity is {h:.1f}% — above normal (40–70%). Open windows to reduce moisture.")
-        open_windows = True; alerts_created += 1
-        reasons.append(f"Humidity high ({h:.1f}%)")
-    elif h <= THRESHOLDS['humidity']['crit_low']:
-        fs.create_alert('humidity', 'critical',
-            f"CRITICAL: Humidity is {h:.1f}% — dangerously dry. Add water misters or humidifiers.")
-        trigger_buzzer = True; alerts_created += 1
-    elif h <= THRESHOLDS['humidity']['warn_low']:
-        fs.create_alert('humidity', 'warning',
-            f"WARNING: Humidity is {h:.1f}% — below normal (40–70%). Consider adding moisture.")
+    if recovered_bucket:
+        sensor_field, msg = _build_bundle(recovered_bucket, 'good')
+        fs.create_alert(sensor_field, 'info', msg)
         alerts_created += 1
 
-    # Gas Level
-    if g >= THRESHOLDS['gas_level']['crit']:
-        fs.create_alert('gas', 'critical',
-            f"CRITICAL: Gas (ammonia) is {g:.1f} ppm — dangerous. Open all windows immediately.")
-        open_windows = True; trigger_buzzer = True; alerts_created += 1
-        reasons.append(f"Gas critical ({g:.1f} ppm)")
-    elif g >= THRESHOLDS['gas_level']['warn']:
-        fs.create_alert('gas', 'warning',
-            f"WARNING: Gas level is {g:.1f} ppm — elevated. Increase ventilation.")
-        open_windows = True; alerts_created += 1
-        reasons.append(f"Gas elevated ({g:.1f} ppm)")
-
-    # Water Level
-    if w <= THRESHOLDS['water_level']['crit_low']:
-        fs.create_alert('water', 'critical',
-            f"CRITICAL: Water level is {w:.1f}% — critically low. Refill troughs immediately.")
-        trigger_buzzer = True; alerts_created += 1
-    elif w <= THRESHOLDS['water_level']['warn_low']:
-        fs.create_alert('water', 'warning',
-            f"WARNING: Water level is {w:.1f}% — getting low. Refill troughs soon.")
-        alerts_created += 1
-
-    # Feed Level
-    if f <= THRESHOLDS['feed_level']['crit_low']:
-        fs.create_alert('feed', 'critical',
-            f"CRITICAL: Feed level is {f:.1f}% — critically low. Refill feeders immediately.")
-        trigger_buzzer = True; alerts_created += 1
-    elif f <= THRESHOLDS['feed_level']['warn_low']:
-        fs.create_alert('feed', 'warning',
-            f"WARNING: Feed level is {f:.1f}% — getting low. Refill feeders soon.")
-        alerts_created += 1
+    fs.set_sensor_states(new_states)
 
     return {
         'open_windows':   open_windows,
@@ -108,10 +275,11 @@ def analyze_reading(reading: dict) -> dict:
     }
 
 
+# ── Recommendations (unchanged) ───────────────────────────────────────────────
+
 def get_recommendations(reading: dict) -> list[dict]:
     t = reading.get('temperature', 0)
     h = reading.get('humidity', 0)
-    g = reading.get('gas_level', 0)
     w = reading.get('water_level', 100)
     f = reading.get('feed_level', 100)
 
@@ -123,7 +291,7 @@ def get_recommendations(reading: dict) -> list[dict]:
         recs.append({'type': 'temperature', 'status': 'warn', 'text': f"Temperature {t:.1f}°C is elevated. Monitor closely and improve ventilation."})
     elif t > 32:
         recs.append({'type': 'temperature', 'status': 'bad',  'text': f"Temperature {t:.1f}°C is critically high. Open windows immediately to prevent heat stress."})
-    elif t < 18:
+    else:
         recs.append({'type': 'temperature', 'status': 'bad',  'text': f"Temperature {t:.1f}°C is low. Provide additional heating."})
 
     if 50 <= h <= 65:
@@ -134,13 +302,6 @@ def get_recommendations(reading: dict) -> list[dict]:
         recs.append({'type': 'humidity', 'status': 'bad',  'text': f"Humidity {h:.1f}% is critically high. Risk of disease. Ventilate urgently."})
     else:
         recs.append({'type': 'humidity', 'status': 'bad',  'text': f"Humidity {h:.1f}% is too low. Use misters or humidifiers."})
-
-    if g < 10:
-        recs.append({'type': 'gas', 'status': 'good', 'text': f"Gas level {g:.1f} ppm is optimal. Air quality is excellent."})
-    elif g < 25:
-        recs.append({'type': 'gas', 'status': 'warn', 'text': f"Gas level {g:.1f} ppm is elevated. Increase ventilation soon."})
-    else:
-        recs.append({'type': 'gas', 'status': 'bad',  'text': f"Gas level {g:.1f} ppm is dangerous. Open all windows immediately to protect birds."})
 
     if w > 60:
         recs.append({'type': 'water', 'status': 'good', 'text': f"Water level {w:.1f}% is adequate."})

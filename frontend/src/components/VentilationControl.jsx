@@ -17,19 +17,10 @@ export default function VentilationControl() {
   const { showToast } = useToast()
   const [status,  setStatus]  = useState(null)
   const [loading, setLoading] = useState(false)
-  const [tick,    setTick]    = useState(0)
 
   useEffect(() => {
-    const unsub = onValue(ref(database, 'poultry/ventilation'), (snap) => {
-      setStatus(snap.val())
-    })
+    const unsub = onValue(ref(database, 'poultry/ventilation'), snap => setStatus(snap.val()))
     return () => unsub()
-  }, [])
-
-  // Live "X ago" counter
-  useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 10000)
-    return () => clearInterval(id)
   }, [])
 
   const handle = async (action) => {
@@ -46,101 +37,103 @@ export default function VentilationControl() {
     setLoading(false)
   }
 
-  const isOpen  = status?.is_open
-  const isAuto  = status?.changed_by === 'auto'
-  const reason  = status?.reason || ''
+  const isOpen      = status?.is_open
+  const isAuto      = status?.changed_by === 'auto'
+  const reason      = status?.reason || ''
   const lastChanged = status?.last_changed
 
   return (
     <div className="card flex flex-col gap-4">
 
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">💨</div>
-        <h3 className="font-semibold text-slate-900">Ventilation Control</h3>
+      <div className="flex items-center gap-2.5">
+        <div className="w-8 h-8 bg-sky-400/[0.10] border border-sky-400/20 rounded-xl flex items-center justify-center text-base">
+          💨
+        </div>
+        <div>
+          <h3 className="font-bold text-white/90 text-sm leading-tight">Ventilation Control</h3>
+          <p className="text-white/55 text-[10px]">Window servo motor</p>
+        </div>
       </div>
 
-      {/* Status display */}
+      {/* Status row */}
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-xs text-slate-500 font-semibold uppercase tracking-wide mb-1">Window Status</p>
-          <div className="flex items-center gap-2">
-            <span className={`w-3 h-3 rounded-full flex-shrink-0 ${isOpen ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`} />
-            <span className={`text-xl font-black tracking-tight ${isOpen ? 'text-green-600' : 'text-slate-500'}`}>
+          <p className="text-white/55 text-[10px] font-semibold uppercase tracking-widest mb-1.5">Window Status</p>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="relative">
+              <span className={`w-3 h-3 rounded-full block ${isOpen ? 'bg-emerald-400' : 'bg-white/30'}`} />
+              {isOpen && <span className="absolute inset-0 rounded-full bg-emerald-400 animate-pulse" />}
+            </div>
+            <span className={`text-2xl font-black tracking-tight ${isOpen ? 'text-emerald-400' : 'text-white/55'}`}>
               {isOpen ? 'OPEN' : 'CLOSED'}
             </span>
           </div>
           {lastChanged && (
-            <p className="text-xs text-slate-400 mt-1">
-              Changed {timeAgo(lastChanged)}
-            </p>
+            <p className="text-white/55 text-xs">Changed {timeAgo(lastChanged)}</p>
           )}
         </div>
 
-        {/* SVG ring */}
-        <div className="relative w-20 h-20 flex-shrink-0">
+        {/* SVG ring indicator */}
+        <div className="relative w-[72px] h-[72px] flex-shrink-0">
           <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
-            <circle cx="50" cy="50" r="38" fill="none" stroke="#e2e8f0" strokeWidth="10" />
+            <circle cx="50" cy="50" r="38" fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth="10"/>
             <circle
               cx="50" cy="50" r="38"
               fill="none"
-              stroke={isOpen ? '#22c55e' : '#cbd5e1'}
+              stroke={isOpen ? '#34d399' : 'rgba(255,255,255,0.12)'}
               strokeWidth="10"
               strokeDasharray={`${isOpen ? 239 : 0} 239`}
               strokeLinecap="round"
-              className="transition-all duration-700"
+              className="transition-colors duration-700"
             />
           </svg>
-          <div className="absolute inset-0 flex items-center justify-center text-2xl">
+          <div className="absolute inset-0 flex items-center justify-center text-xl pointer-events-none">
             {isOpen ? '🪟' : '🚪'}
           </div>
         </div>
       </div>
 
-      {/* Auto / Manual badge */}
+      {/* Auto/Manual badge */}
       {status && (
         <div className={`rounded-xl px-3 py-2.5 border text-xs font-semibold flex items-start gap-2 ${
           isAuto
             ? isOpen
-              ? 'bg-orange-50 border-orange-200 text-orange-700'
-              : 'bg-green-50 border-green-200 text-green-700'
-            : 'bg-slate-50 border-slate-200 text-slate-600'
+              ? 'bg-amber-400/[0.10] border-amber-400/25 text-amber-300'
+              : 'bg-emerald-400/[0.10] border-emerald-400/25 text-emerald-300'
+            : 'bg-white/[0.06] border-white/[0.12] text-white/70'
         }`}>
-          <span className="mt-0.5 flex-shrink-0 text-sm">{isAuto ? '🤖' : '👤'}</span>
+          <span className="mt-0.5 flex-shrink-0">{isAuto ? '🤖' : '👤'}</span>
           <div>
-            <p className="font-bold">
-              {isAuto ? 'Automatic Control' : 'Manual Control'}
-            </p>
-            {reason && (
-              <p className="font-normal mt-0.5 leading-relaxed opacity-90">{reason}</p>
-            )}
+            <p className="font-bold">{isAuto ? 'Automatic Control' : 'Manual Control'}</p>
+            {reason && <p className="font-normal mt-0.5 opacity-90 leading-relaxed">{reason}</p>}
           </div>
         </div>
       )}
 
-      {/* Auto override warning */}
+      {/* Auto warning */}
       {isAuto && isOpen && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-xs text-amber-700 flex items-start gap-2">
-          <span className="flex-shrink-0">⚠️</span>
-          <span>Auto-control is active. Windows will auto-close once conditions return to safe levels.</span>
+        <div className="bg-amber-400/[0.10] border border-amber-400/25 rounded-xl px-3 py-2 text-xs text-amber-300 flex items-start gap-2">
+          <span className="flex-shrink-0 mt-0.5">⚠️</span>
+          <span>Auto-control active — windows close automatically when conditions recover.</span>
         </div>
       )}
 
-      {/* Control buttons */}
-      <div className="grid grid-cols-2 gap-3">
+      {/* Buttons */}
+      <div className="grid grid-cols-2 gap-2.5">
         <button
           onClick={() => handle('open')}
           disabled={loading || isOpen}
-          className={`py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 flex items-center justify-center gap-2 ${
+          className={`py-2.5 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2 active:scale-[0.97] ${
             loading
-              ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+              ? 'bg-white/[0.05] text-white/40 cursor-not-allowed'
               : isOpen
-              ? 'bg-green-100 text-green-600 cursor-not-allowed border border-green-200'
-              : 'bg-green-600 hover:bg-green-700 active:scale-95 text-white shadow-sm'
+              ? 'bg-emerald-400/[0.12] text-emerald-300 cursor-not-allowed border border-emerald-400/20'
+              : 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold shadow-md shadow-emerald-900/30'
           }`}
         >
           {loading
-            ? <span className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+            ? <span className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
             : '🪟'}
           Open
         </button>
@@ -148,23 +141,23 @@ export default function VentilationControl() {
         <button
           onClick={() => handle('close')}
           disabled={loading || !isOpen}
-          className={`py-2.5 rounded-xl font-semibold text-sm transition-all duration-200 flex items-center justify-center gap-2 ${
+          className={`py-2.5 rounded-xl font-semibold text-sm transition-colors flex items-center justify-center gap-2 active:scale-[0.97] ${
             loading
-              ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+              ? 'bg-white/[0.05] text-white/40 cursor-not-allowed'
               : !isOpen
-              ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
-              : 'bg-slate-700 hover:bg-slate-800 active:scale-95 text-white shadow-sm'
+              ? 'bg-white/[0.05] text-white/40 cursor-not-allowed border border-white/[0.10]'
+              : 'bg-white/[0.12] hover:bg-white/[0.18] border border-white/[0.20] text-white/90 shadow-md shadow-black/30'
           }`}
         >
           {loading
-            ? <span className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
+            ? <span className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
             : '🚪'}
           Close
         </button>
       </div>
 
-      <p className="text-xs text-slate-400 text-center -mt-1">
-        Auto-opens: temp &gt; 35°C · humidity &gt; 70% · gas &gt; 50 ppm
+      <p className="text-white/50 text-[10px] text-center -mt-1">
+        Auto-opens: temp &gt; 28°C · humidity &gt; 65%
       </p>
     </div>
   )
