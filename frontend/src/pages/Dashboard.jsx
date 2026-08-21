@@ -7,7 +7,13 @@ import VentilationControl from '../components/VentilationControl'
 import SensorChart from '../components/SensorChart'
 import { getLatestReading } from '../services/api'
 
-const OFFLINE_THRESHOLD_S = 120
+// The device's online/offline status is judged by its heartbeat, not by
+// whether a sensor reading recently arrived — a single broken sensor (e.g.
+// the HC-SR04 losing its echo) can block a whole reading cycle even while
+// the ESP32 itself is fully powered on and connected. The heartbeat fires
+// every 5s independent of sensor success, so 20s (4 missed beats) is plenty
+// of margin before genuinely calling it offline.
+const HEARTBEAT_OFFLINE_THRESHOLD_S = 20
 
 const REFRESH_OPTIONS = [
   { label: 'Live (real-time)', value: 0   },
@@ -27,10 +33,13 @@ export default function Dashboard() {
   const [firebaseError,   setFirebaseError]   = useState(false)
   const [loading,         setLoading]         = useState(true)
   const [secondsAgo,      setSecondsAgo]      = useState(0)
+  const [lastHeartbeat,   setLastHeartbeat]   = useState(null)
+  const [heartbeatAgo,    setHeartbeatAgo]    = useState(null)
   const [refreshInterval, setRefreshInterval] = useState(0)
   const [countdown,       setCountdown]       = useState(0)
   const [unreadAlerts,    setUnreadAlerts]    = useState(0)
   const timerRef      = useRef(null)
+  const heartbeatTimerRef = useRef(null)
   const refreshRef    = useRef(null)
   const countdownRef  = useRef(null)
 
@@ -67,6 +76,24 @@ export default function Dashboard() {
     })
     return () => unsub()
   }, [])
+
+  useEffect(() => {
+    const unsub = onValue(ref(database, 'poultry/device_status/last_heartbeat'), snapshot => {
+      const ts = snapshot.val()
+      setLastHeartbeat(ts ? new Date(ts) : null)
+    })
+    return () => unsub()
+  }, [])
+
+  useEffect(() => {
+    if (!lastHeartbeat) return
+    setHeartbeatAgo(0)
+    clearInterval(heartbeatTimerRef.current)
+    heartbeatTimerRef.current = setInterval(() => {
+      setHeartbeatAgo(Math.floor((Date.now() - lastHeartbeat.getTime()) / 1000))
+    }, 1000)
+    return () => clearInterval(heartbeatTimerRef.current)
+  }, [lastHeartbeat])
 
   useEffect(() => {
     const unsub = onValue(ref(database, 'poultry/alerts'), snap => {
@@ -113,7 +140,7 @@ export default function Dashboard() {
     return () => { clearInterval(refreshRef.current); clearInterval(countdownRef.current) }
   }, [refreshInterval])
 
-  const isOffline = !firebaseError && (!latest || secondsAgo > OFFLINE_THRESHOLD_S)
+  const isOffline = !firebaseError && (!lastHeartbeat || heartbeatAgo > HEARTBEAT_OFFLINE_THRESHOLD_S)
 
   const formatAge = (s) => {
     if (s < 60)   return `${s}s ago`

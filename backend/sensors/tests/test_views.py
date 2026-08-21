@@ -143,42 +143,6 @@ class LatestReadingTests(TestCase):
         self.assertEqual(len(resp.data['recommendations']), 4)  # temp, humidity, water, feed
 
 
-class SimulateReadingTests(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-        self.url = reverse('simulate-reading')
-
-    @patch('sensors.views.fs')
-    @patch('sensors.views.analyze_reading')
-    def test_simulated_reading_has_no_gas_level(self, mock_analyze, mock_fs):
-        mock_analyze.return_value = {'open_windows': False, 'trigger_buzzer': False, 'alerts_created': 0, 'reason': ''}
-        mock_fs.save_reading.return_value = 'sim1'
-        mock_fs.get_ventilation.return_value = {'is_open': False}
-
-        resp = self.client.post(self.url)
-
-        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(set(resp.data['reading'].keys()), {'temperature', 'humidity', 'water_level', 'feed_level'})
-
-
-class SeedDataTests(TestCase):
-    def setUp(self):
-        self.client = APIClient()
-        self.url = reverse('seed-data')
-
-    @patch('sensors.views.fs')
-    def test_seeds_48_readings_without_gas_level(self, mock_fs):
-        resp = self.client.post(self.url)
-        self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data['seeded'], 48)
-
-        saved_readings = mock_fs.save_seed_readings.call_args[0][0]
-        self.assertEqual(len(saved_readings), 48)
-        for r in saved_readings:
-            self.assertNotIn('gas_level', r)
-            self.assertIn('timestamp', r)
-
-
 class AlertsEndpointTests(TestCase):
     def setUp(self):
         self.client = APIClient()

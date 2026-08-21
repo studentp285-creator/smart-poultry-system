@@ -1,9 +1,7 @@
-import random
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from datetime import datetime, timezone, timedelta
 from functools import wraps
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -36,11 +34,6 @@ def require_device_key(view_func):
                 )
         return view_func(request, *args, **kwargs)
     return wrapper
-
-
-def _now_iso(offset_hours=0):
-    dt = datetime.now(timezone.utc) - timedelta(hours=offset_hours)
-    return dt.isoformat()
 
 
 @api_view(['GET', 'POST'])
@@ -88,55 +81,45 @@ def latest_reading(request):
     return Response({'reading': reading, 'recommendations': recs})
 
 
+@api_view(['POST'])
+def device_heartbeat(request):
+    """Proves the ESP32 is powered on and can reach the backend — nothing
+    more. Deliberately independent of sensor-reading success."""
+    fs.record_heartbeat()
+    return Response({'status': 'ok'})
+
+
 def _update_ventilation(result: dict):
-    """Auto-open on threshold breach; auto-close when conditions recover."""
+    """Auto-open on threshold breach; auto-close when conditions recover.
+    A manual close is respected while temperature is only at warning level,
+    but critical temperature always forces the vent back open — safety
+    takes precedence over a manual override in a genuine emergency. A
+    manual open is never auto-closed."""
+    current = fs.get_ventilation()
+
     if result['open_windows']:
+        manually_closed = current.get('changed_by') == 'manual' and not current.get('is_open')
+        if manually_closed and not result.get('temp_critical'):
+            return
         fs.set_ventilation(True, 'auto', result['reason'])
-    else:
-        # Only auto-close if the system last opened it automatically
-        current = fs.get_ventilation()
-        if current.get('changed_by') == 'auto' and current.get('is_open'):
-            fs.set_ventilation(False, 'auto', 'Conditions returned to safe levels')
+    elif current.get('changed_by') == 'auto' and current.get('is_open'):
+        fs.set_ventilation(False, 'auto', 'Conditions returned to safe levels')
+
+
+@api_view(['GET'])
+def ventilation_status(request):
+    return Response(fs.get_ventilation())
 
 
 @api_view(['POST'])
-def simulate_reading(request):
-    reading = {
-        'temperature': round(random.uniform(18, 40), 1),
-        'humidity':    round(random.uniform(30, 90), 1),
-        'water_level': round(random.uniform(5, 100), 1),
-        'feed_level':  round(random.uniform(5, 100), 1),
-    }
-    key = fs.save_reading(reading)
-    result = analyze_reading(reading)
-
-    _update_ventilation(result)
-
-    vent = fs.get_ventilation()
-
-    return Response({
-        'id':               key,
-        'reading':          reading,
-        'alerts_created':   result['alerts_created'],
-        'ventilation_open': vent.get('is_open', False),
-        'buzzer_triggered': result['trigger_buzzer'],
-        'reason':           result['reason'],
-    }, status=status.HTTP_201_CREATED)
-
-
-@api_view(['POST'])
-def seed_data(request):
-    readings = []
-    for i in range(48):
-        readings.append({
-            'temperature': round(random.uniform(20, 38), 1),
-            'humidity':    round(random.uniform(35, 85), 1),
-            'water_level': round(max(10, 100 - i * 1.5 + random.uniform(-5, 5)), 1),
-            'feed_level':  round(max(10, 100 - i * 1.2 + random.uniform(-5, 5)), 1),
-            'timestamp':   _now_iso(offset_hours=48 - i),
-        })
-    fs.save_seed_readings(readings)
-    return Response({'seeded': len(readings)})
+def ventilation_control(request):
+    """Manual open/close from the dashboard. Not device-authenticated —
+    this is a user action, not an ESP32 write."""
+    action = str(request.data.get('action', '')).strip().lower()
+    if action not in ('open', 'close'):
+        return Response({'error': "action must be 'open' or 'close'"}, status=status.HTTP_400_BAD_REQUEST)
+    fs.set_ventilation(action == 'open', 'manual', f"Manually {'opened' if action == 'open' else 'closed'} by user")
+    return Response(fs.get_ventilation())
 
 
 @api_view(['GET'])

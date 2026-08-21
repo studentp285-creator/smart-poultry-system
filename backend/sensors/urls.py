@@ -4,8 +4,9 @@ from . import views
 urlpatterns = [
     path('readings/',                  views.sensor_readings,   name='sensor-readings'),
     path('readings/latest/',           views.latest_reading,    name='latest-reading'),
-    path('readings/simulate/',         views.simulate_reading,  name='simulate-reading'),
-    path('readings/seed/',             views.seed_data,         name='seed-data'),
+    path('device/heartbeat/',          views.device_heartbeat,  name='device-heartbeat'),
+    path('ventilation/',               views.ventilation_status,  name='ventilation-status'),
+    path('ventilation/control/',       views.ventilation_control, name='ventilation-control'),
     path('alerts/',                    views.alerts_list,       name='alerts-list'),
     path('alerts/<str:alert_id>/read/', views.mark_alert_read,  name='mark-alert-read'),
     path('alerts/mark-all-read/',      views.mark_all_read,      name='mark-all-read'),

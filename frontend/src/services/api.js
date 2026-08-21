@@ -8,8 +8,6 @@ const api = axios.create({
 export const getLatestReading = () => api.get('/readings/latest/')
 export const getReadings = (limit = 50) => api.get(`/readings/?limit=${limit}`)
 export const postReading = (data) => api.post('/readings/', data)
-export const simulateReading = () => api.post('/readings/simulate/')
-export const seedData = () => api.post('/readings/seed/')
 
 export const getAlerts = () => api.get('/alerts/')
 export const markAlertRead = (id) => api.patch(`/alerts/${id}/read/`)

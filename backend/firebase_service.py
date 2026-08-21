@@ -59,15 +59,6 @@ def get_history(limit: int = 50) -> list[dict]:
     return readings
 
 
-def save_seed_readings(readings: list[dict]):
-    db = get_firebase()
-    history_ref = db.reference('poultry/readings/history')
-    for r in readings:
-        history_ref.push(r)
-    if readings:
-        db.reference('poultry/readings/latest').set(readings[-1])
-
-
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
 DEFAULT_THRESHOLDS = {
@@ -168,6 +159,32 @@ def get_app_settings() -> dict:
 def set_app_settings(settings: dict):
     db = get_firebase()
     db.reference('poultry/app_settings').set(settings)
+
+
+# ── Device connectivity ────────────────────────────────────────────────────────
+# Deliberately separate from readings/ — a heartbeat only proves the ESP32 is
+# powered on and can reach the backend. It must never depend on whether any
+# particular sensor read succeeded, or one broken sensor makes the whole
+# device look "offline" even though it's fully up and communicating.
+
+def record_heartbeat():
+    db = get_firebase()
+    db.reference('poultry/device_status/last_heartbeat').set(_now())
+
+
+def get_last_heartbeat() -> str | None:
+    db = get_firebase()
+    return db.reference('poultry/device_status/last_heartbeat').get()
+
+
+def get_device_status() -> dict:
+    db = get_firebase()
+    return db.reference('poultry/device_status').get() or {'is_offline': False}
+
+
+def set_device_status(is_offline: bool):
+    db = get_firebase()
+    db.reference('poultry/device_status').update({'is_offline': is_offline, 'changed_at': _now()})
 
 
 # ── Ventilation ───────────────────────────────────────────────────────────────

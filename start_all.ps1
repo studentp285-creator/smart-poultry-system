@@ -10,14 +10,6 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "`$env:PYTHONUTF8=
 Write-Host "Waiting for backend to start..." -ForegroundColor Yellow
 Start-Sleep -Seconds 5
 
-# Seed sample data
-try {
-    Invoke-RestMethod -Uri "http://localhost:8000/api/readings/seed/" -Method POST | Out-Null
-    Write-Host "Sample data seeded OK" -ForegroundColor Green
-} catch {
-    Write-Host "Could not seed data (backend may still be starting - this is OK)" -ForegroundColor Yellow
-}
-
 # Start React frontend in new window
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PSScriptRoot\frontend'; npm run dev"
 

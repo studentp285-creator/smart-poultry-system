@@ -157,7 +157,7 @@ export default function VentilationControl() {
       </div>
 
       <p className="text-white/50 text-[10px] text-center -mt-1">
-        Auto-opens: temp &gt; 28°C · humidity &gt; 65%
+        Auto-opens: temp &gt; 28°C
       </p>
     </div>
   )

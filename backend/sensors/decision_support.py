@@ -176,6 +176,7 @@ def _build_bundle(items: list, level: str) -> tuple[str, str]:
 def analyze_reading(reading: dict) -> dict:
     open_windows   = False
     trigger_buzzer = False
+    temp_critical  = False
     alerts_created = 0
     reasons        = []
 
@@ -210,17 +211,18 @@ def analyze_reading(reading: dict) -> dict:
         # ── Ventilation / buzzer decisions ────────────────────────────────────
         if sensor == 'temperature':
             if new_state == 'critical':
-                open_windows = True; trigger_buzzer = True
+                open_windows = True; trigger_buzzer = True; temp_critical = True
                 reasons.append(f"Temp critical ({value:.1f}°C)")
             elif new_state == 'warning':
                 open_windows = True
                 reasons.append(f"Temp elevated ({value:.1f}°C)")
         elif sensor == 'humidity':
+            # Ventilation (servo) follows temperature only — humidity still
+            # raises alerts/buzzer but no longer opens or closes the vent.
             if new_state == 'critical':
-                open_windows = True; trigger_buzzer = True
+                trigger_buzzer = True
                 reasons.append(f"Humidity critical ({value:.1f}%)")
             elif new_state == 'warning':
-                open_windows = True
                 reasons.append(f"Humidity elevated ({value:.1f}%)")
         elif sensor in ('water_level', 'feed_level'):
             if new_state == 'critical':
@@ -270,6 +272,7 @@ def analyze_reading(reading: dict) -> dict:
     return {
         'open_windows':   open_windows,
         'trigger_buzzer': trigger_buzzer,
+        'temp_critical':  temp_critical,
         'alerts_created': alerts_created,
         'reason':         ' · '.join(reasons) if reasons else '',
     }
