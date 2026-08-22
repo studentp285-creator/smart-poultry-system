@@ -136,6 +136,12 @@ class LatestReadingTests(TestCase):
         mock_fs.get_latest_reading.return_value = {
             'temperature': 23, 'humidity': 58, 'water_level': 75, 'feed_level': 70,
         }
+        mock_fs.get_thresholds.return_value = {
+            'temperature': {'warn_high': 28.0, 'crit_high': 32.0, 'warn_low': 18.0, 'crit_low': 10.0},
+            'humidity':    {'warn_high': 65.0, 'crit_high': 75.0, 'warn_low': 50.0, 'crit_low': 40.0},
+            'water_level': {'warn_low': 30.0, 'crit_low': 15.0},
+            'feed_level':  {'warn_low': 30.0, 'crit_low': 15.0},
+        }
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertIn('reading', resp.data)

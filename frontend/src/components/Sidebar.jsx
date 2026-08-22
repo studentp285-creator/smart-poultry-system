@@ -3,6 +3,7 @@ import { useEffect, useState, useRef } from 'react'
 import { ref, onValue } from 'firebase/database'
 import { database } from '../firebase'
 import { useAuth } from '../context/AuthContext'
+import useDeviceOnline from '../hooks/useDeviceOnline'
 import Logo from './Logo'
 
 const NAV = [
@@ -30,8 +31,6 @@ const NAV = [
 
 const PAGE_TITLES = { '/': 'Dashboard', '/history': 'History', '/alerts': 'Alerts', '/chat': 'AI Assistant', '/settings': 'Settings' }
 
-const DEVICE_OFFLINE_THRESHOLD_MS = 120000
-
 function initials(name) {
   if (!name) return '?'
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)
@@ -44,8 +43,7 @@ export default function Sidebar() {
   const drawerRef = useRef(null)
   const [open,         setOpen]         = useState(false)
   const [unread,       setUnread]       = useState(0)
-  const [deviceOnline, setDeviceOnline] = useState(null) // null = connecting, true/false = known state
-  const lastReadingAtRef = useRef(null)
+  const deviceOnline = useDeviceOnline() // null = connecting, true/false = known state
 
   useEffect(() => { setOpen(false) }, [location.pathname])
 
@@ -67,25 +65,6 @@ export default function Sidebar() {
       setUnread(data ? Object.values(data).filter(a => !a.is_read).length : 0)
     })
     return () => unsub()
-  }, [])
-
-  useEffect(() => {
-    const unsub = onValue(ref(database, 'poultry/readings/latest'), snap => {
-      const data = snap.val()
-      if (data?.timestamp) {
-        lastReadingAtRef.current = new Date(data.timestamp).getTime()
-        setDeviceOnline(true)
-      }
-    })
-    return () => unsub()
-  }, [])
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (lastReadingAtRef.current === null) return
-      setDeviceOnline(Date.now() - lastReadingAtRef.current < DEVICE_OFFLINE_THRESHOLD_MS)
-    }, 5000)
-    return () => clearInterval(id)
   }, [])
 
   const handleLogout = () => { setOpen(false); logout(); navigate('/login') }

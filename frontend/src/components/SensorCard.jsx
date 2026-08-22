@@ -1,17 +1,14 @@
-function getStatus(value, type) {
-  if (type === 'temperature') {
-    if (value >= 32 || value <= 10) return 'critical'
-    if (value >= 28 || value <= 18) return 'warning'
-    return 'good'
-  }
-  if (type === 'humidity') {
-    if (value >= 75 || value <= 40) return 'critical'
-    if (value >= 65 || value <= 50) return 'warning'
+function getStatus(value, type, thresholds) {
+  const t = thresholds?.[type]
+  if (!t) return 'good'
+  if (type === 'temperature' || type === 'humidity') {
+    if (value >= t.crit_high || value <= t.crit_low) return 'critical'
+    if (value >= t.warn_high || value <= t.warn_low) return 'warning'
     return 'good'
   }
   if (type === 'water_level' || type === 'feed_level') {
-    if (value <= 15) return 'critical'
-    if (value <= 30) return 'warning'
+    if (value <= t.crit_low) return 'critical'
+    if (value <= t.warn_low) return 'warning'
     return 'good'
   }
   return 'good'
@@ -89,10 +86,10 @@ function SkeletonCard() {
   )
 }
 
-export default function SensorCard({ icon, label, value, unit, type, maxValue = 100, previousValue, loading = false }) {
+export default function SensorCard({ icon, label, value, unit, type, maxValue = 100, previousValue, thresholds, loading = false }) {
   if (loading) return <SkeletonCard />
 
-  const status = value != null ? getStatus(value, type) : 'good'
+  const status = value != null ? getStatus(value, type, thresholds) : 'good'
   const s = S[status]
   const pct = value != null ? Math.min(100, Math.max(0, (value / maxValue) * 100)) : 0
 

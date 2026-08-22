@@ -189,7 +189,8 @@ export default function Login() {
                   className="w-full bg-white/5 border border-white/10 text-white placeholder-white/30 rounded-2xl pl-11 pr-12 py-3.5 text-sm focus:outline-none focus:border-cyan-400/60 focus:bg-white/8 focus:ring-1 focus:ring-cyan-400/20 transition-colors duration-100"
                 />
                 <button type="button" onClick={() => setShowPw(s => !s)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/80 transition-colors">
+                  aria-label={showPw ? 'Hide password' : 'Show password'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 text-cyan-300 hover:bg-white/20 hover:text-cyan-200 transition-colors">
                   <Eye show={showPw} />
                 </button>
               </div>

@@ -6,14 +6,8 @@ import AlertPanel from '../components/AlertPanel'
 import VentilationControl from '../components/VentilationControl'
 import SensorChart from '../components/SensorChart'
 import { getLatestReading } from '../services/api'
-
-// The device's online/offline status is judged by its heartbeat, not by
-// whether a sensor reading recently arrived — a single broken sensor (e.g.
-// the HC-SR04 losing its echo) can block a whole reading cycle even while
-// the ESP32 itself is fully powered on and connected. The heartbeat fires
-// every 5s independent of sensor success, so 20s (4 missed beats) is plenty
-// of margin before genuinely calling it offline.
-const HEARTBEAT_OFFLINE_THRESHOLD_S = 20
+import useDeviceOnline from '../hooks/useDeviceOnline'
+import useThresholds from '../hooks/useThresholds'
 
 const REFRESH_OPTIONS = [
   { label: 'Live (real-time)', value: 0   },
@@ -33,13 +27,12 @@ export default function Dashboard() {
   const [firebaseError,   setFirebaseError]   = useState(false)
   const [loading,         setLoading]         = useState(true)
   const [secondsAgo,      setSecondsAgo]      = useState(0)
-  const [lastHeartbeat,   setLastHeartbeat]   = useState(null)
-  const [heartbeatAgo,    setHeartbeatAgo]    = useState(null)
   const [refreshInterval, setRefreshInterval] = useState(0)
   const [countdown,       setCountdown]       = useState(0)
   const [unreadAlerts,    setUnreadAlerts]    = useState(0)
+  const deviceOnline  = useDeviceOnline()
+  const thresholds    = useThresholds()
   const timerRef      = useRef(null)
-  const heartbeatTimerRef = useRef(null)
   const refreshRef    = useRef(null)
   const countdownRef  = useRef(null)
 
@@ -53,14 +46,14 @@ export default function Dashboard() {
           setLatest(prev => { setPrevious(prev); return data })
           setLastUpdated(new Date())
           setFirebaseError(false)
-          setRecs(buildRecs(data))
+          setRecs(buildRecs(data, thresholds))
         }
         setLoading(false)
       },
       () => { setFirebaseError(true); setLoading(false) }
     )
     return () => unsub()
-  }, [])
+  }, [thresholds])
 
   useEffect(() => {
     const histRef = ref(database, 'poultry/readings/history')
@@ -76,24 +69,6 @@ export default function Dashboard() {
     })
     return () => unsub()
   }, [])
-
-  useEffect(() => {
-    const unsub = onValue(ref(database, 'poultry/device_status/last_heartbeat'), snapshot => {
-      const ts = snapshot.val()
-      setLastHeartbeat(ts ? new Date(ts) : null)
-    })
-    return () => unsub()
-  }, [])
-
-  useEffect(() => {
-    if (!lastHeartbeat) return
-    setHeartbeatAgo(0)
-    clearInterval(heartbeatTimerRef.current)
-    heartbeatTimerRef.current = setInterval(() => {
-      setHeartbeatAgo(Math.floor((Date.now() - lastHeartbeat.getTime()) / 1000))
-    }, 1000)
-    return () => clearInterval(heartbeatTimerRef.current)
-  }, [lastHeartbeat])
 
   useEffect(() => {
     const unsub = onValue(ref(database, 'poultry/alerts'), snap => {
@@ -127,7 +102,7 @@ export default function Dashboard() {
             setLatest(prev => { setPrevious(prev); return reading })
             setLastUpdated(new Date())
             setFirebaseError(false)
-            setRecs(buildRecs(reading))
+            setRecs(buildRecs(reading, thresholds))
           }
         })
         .catch(() => setFirebaseError(true))
@@ -138,9 +113,9 @@ export default function Dashboard() {
     refreshRef.current   = setInterval(doFetch, refreshInterval * 1000)
     countdownRef.current = setInterval(() => setCountdown(c => Math.max(0, c - 1)), 1000)
     return () => { clearInterval(refreshRef.current); clearInterval(countdownRef.current) }
-  }, [refreshInterval])
+  }, [refreshInterval, thresholds])
 
-  const isOffline = !firebaseError && (!lastHeartbeat || heartbeatAgo > HEARTBEAT_OFFLINE_THRESHOLD_S)
+  const isOffline = !firebaseError && deviceOnline !== true
 
   const formatAge = (s) => {
     if (s < 60)   return `${s}s ago`
@@ -247,10 +222,10 @@ export default function Dashboard() {
           Array.from({ length: 4 }).map((_, i) => <SensorCard key={i} loading={true} />)
         ) : (
           <>
-            <SensorCard icon="🌡️" label="Temperature" value={isOffline ? 0 : latest?.temperature} unit="°C"  type="temperature" maxValue={50}  previousValue={isOffline ? null : previous?.temperature} />
-            <SensorCard icon="💧" label="Humidity"    value={isOffline ? 0 : latest?.humidity}    unit="%"   type="humidity"    maxValue={100} previousValue={isOffline ? null : previous?.humidity} />
-            <SensorCard icon="🚰" label="Water Level" value={isOffline ? 0 : latest?.water_level} unit="%"   type="water_level" maxValue={100} previousValue={isOffline ? null : previous?.water_level} />
-            <SensorCard icon="🌾" label="Feed Level"  value={isOffline ? 0 : latest?.feed_level}  unit="%"   type="feed_level"  maxValue={100} previousValue={isOffline ? null : previous?.feed_level} />
+            <SensorCard icon="🌡️" label="Temperature" value={isOffline ? 0 : latest?.temperature} unit="°C"  type="temperature" maxValue={50}  previousValue={isOffline ? null : previous?.temperature} thresholds={thresholds} />
+            <SensorCard icon="💧" label="Humidity"    value={isOffline ? 0 : latest?.humidity}    unit="%"   type="humidity"    maxValue={100} previousValue={isOffline ? null : previous?.humidity} thresholds={thresholds} />
+            <SensorCard icon="🚰" label="Water Level" value={isOffline ? 0 : latest?.water_level} unit="%"   type="water_level" maxValue={100} previousValue={isOffline ? null : previous?.water_level} thresholds={thresholds} />
+            <SensorCard icon="🌾" label="Feed Level"  value={isOffline ? 0 : latest?.feed_level}  unit="%"   type="feed_level"  maxValue={100} previousValue={isOffline ? null : previous?.feed_level} thresholds={thresholds} />
           </>
         )}
       </div>
@@ -375,27 +350,31 @@ function DashboardKPIs({ unreadAlerts, history, lastUpdated, secondsAgo, formatA
   )
 }
 
-function buildRecs(r) {
+function buildRecs(r, thresholds) {
   const recs = []
   const { temperature: t, humidity: h, water_level: w, feed_level: f } = r
+  const tt = thresholds.temperature, th = thresholds.humidity
+  const tw = thresholds.water_level, tf = thresholds.feed_level
 
-  if (18 <= t && t <= 28)       recs.push({ status: 'good', text: `Temperature ${t.toFixed(1)}°C is optimal (18–28°C).` })
-  else if (t > 28 && t <= 32)  recs.push({ status: 'warn', text: `Temperature ${t.toFixed(1)}°C is elevated — monitor closely and improve ventilation.` })
-  else if (t > 32)              recs.push({ status: 'bad',  text: `Temperature ${t.toFixed(1)}°C is critically high — open windows immediately to prevent heat stress.` })
-  else                          recs.push({ status: 'bad',  text: `Temperature ${t.toFixed(1)}°C is low — provide additional heating.` })
+  if (t > tt.warn_low && t < tt.warn_high)      recs.push({ status: 'good', text: `Temperature ${t.toFixed(1)}°C is optimal (${tt.warn_low}–${tt.warn_high}°C).` })
+  else if (t >= tt.warn_high && t < tt.crit_high) recs.push({ status: 'warn', text: `Temperature ${t.toFixed(1)}°C is elevated — monitor closely and improve ventilation.` })
+  else if (t >= tt.crit_high)                    recs.push({ status: 'bad',  text: `Temperature ${t.toFixed(1)}°C is critically high — open windows immediately to prevent heat stress.` })
+  else if (t <= tt.crit_low)                     recs.push({ status: 'bad',  text: `Temperature ${t.toFixed(1)}°C is critically low — provide additional heating immediately.` })
+  else                                            recs.push({ status: 'warn', text: `Temperature ${t.toFixed(1)}°C is low — provide additional heating.` })
 
-  if (50 <= h && h <= 65)           recs.push({ status: 'good', text: `Humidity ${h.toFixed(1)}% is optimal (50–65%).` })
-  else if ((40 <= h && h < 50) || (65 < h && h <= 75)) recs.push({ status: 'warn', text: `Humidity ${h.toFixed(1)}% is outside optimal range (50–65%) — adjust ventilation.` })
-  else if (h > 75)                  recs.push({ status: 'bad',  text: `Humidity ${h.toFixed(1)}% is critically high — risk of disease, ventilate urgently.` })
-  else                              recs.push({ status: 'bad',  text: `Humidity ${h.toFixed(1)}% is too low — use misters or humidifiers.` })
+  if (h > th.warn_low && h < th.warn_high)      recs.push({ status: 'good', text: `Humidity ${h.toFixed(1)}% is optimal (${th.warn_low}–${th.warn_high}%).` })
+  else if (h >= th.warn_high && h < th.crit_high) recs.push({ status: 'warn', text: `Humidity ${h.toFixed(1)}% is outside optimal range (${th.warn_low}–${th.warn_high}%) — adjust ventilation.` })
+  else if (h >= th.crit_high)                    recs.push({ status: 'bad',  text: `Humidity ${h.toFixed(1)}% is critically high — risk of disease, ventilate urgently.` })
+  else if (h <= th.crit_low)                     recs.push({ status: 'bad',  text: `Humidity ${h.toFixed(1)}% is too low — use misters or humidifiers immediately.` })
+  else                                            recs.push({ status: 'warn', text: `Humidity ${h.toFixed(1)}% is too low — use misters or humidifiers.` })
 
-  if (w > 60)      recs.push({ status: 'good', text: `Water level ${w.toFixed(1)}% is adequate.` })
-  else if (w > 30) recs.push({ status: 'warn', text: `Water level ${w.toFixed(1)}% is getting low — refill soon.` })
-  else             recs.push({ status: 'bad',  text: `Water level ${w.toFixed(1)}% is critically low — refill immediately, birds can dehydrate within hours!` })
+  if (w > tw.warn_low)      recs.push({ status: 'good', text: `Water level ${w.toFixed(1)}% is adequate.` })
+  else if (w > tw.crit_low) recs.push({ status: 'warn', text: `Water level ${w.toFixed(1)}% is getting low — refill soon.` })
+  else                      recs.push({ status: 'bad',  text: `Water level ${w.toFixed(1)}% is critically low — refill immediately, birds can dehydrate within hours!` })
 
-  if (f > 60)      recs.push({ status: 'good', text: `Feed level ${f.toFixed(1)}% is adequate.` })
-  else if (f > 30) recs.push({ status: 'warn', text: `Feed level ${f.toFixed(1)}% is getting low — refill soon.` })
-  else             recs.push({ status: 'bad',  text: `Feed level ${f.toFixed(1)}% is critically low — refill feeders immediately!` })
+  if (f > tf.warn_low)      recs.push({ status: 'good', text: `Feed level ${f.toFixed(1)}% is adequate.` })
+  else if (f > tf.crit_low) recs.push({ status: 'warn', text: `Feed level ${f.toFixed(1)}% is getting low — refill soon.` })
+  else                      recs.push({ status: 'bad',  text: `Feed level ${f.toFixed(1)}% is critically low — refill feeders immediately!` })
 
   return recs
 }

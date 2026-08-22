@@ -278,46 +278,61 @@ def analyze_reading(reading: dict) -> dict:
     }
 
 
-# ── Recommendations (unchanged) ───────────────────────────────────────────────
+# ── Recommendations ────────────────────────────────────────────────────────────
 
-def get_recommendations(reading: dict) -> list[dict]:
+def get_recommendations(reading: dict, thresholds: dict = None) -> list[dict]:
+    """Uses the same configurable thresholds (Settings page) as analyze_reading,
+    so recommendations always match the current alert/ventilation levels."""
+    thresholds = thresholds or fs.get_thresholds()
     t = reading.get('temperature', 0)
     h = reading.get('humidity', 0)
     w = reading.get('water_level', 100)
     f = reading.get('feed_level', 100)
 
+    tt, th = thresholds['temperature'], thresholds['humidity']
+    tw, tf = thresholds['water_level'], thresholds['feed_level']
+
     recs = []
 
-    if 18 <= t <= 28:
-        recs.append({'type': 'temperature', 'status': 'good', 'text': f"Temperature {t:.1f}°C is within the optimal range (18–28°C)."})
-    elif 28 < t <= 32:
-        recs.append({'type': 'temperature', 'status': 'warn', 'text': f"Temperature {t:.1f}°C is elevated. Monitor closely and improve ventilation."})
-    elif t > 32:
-        recs.append({'type': 'temperature', 'status': 'bad',  'text': f"Temperature {t:.1f}°C is critically high. Open windows immediately to prevent heat stress."})
+    temp_state = _raw_state('temperature', t, thresholds)
+    if temp_state == 'good':
+        recs.append({'type': 'temperature', 'status': 'good', 'text': f"Temperature {t:.1f}°C is within the optimal range ({tt['warn_low']:.0f}–{tt['warn_high']:.0f}°C)."})
+    elif temp_state == 'warning':
+        if t >= tt['warn_high']:
+            recs.append({'type': 'temperature', 'status': 'warn', 'text': f"Temperature {t:.1f}°C is elevated. Monitor closely and improve ventilation."})
+        else:
+            recs.append({'type': 'temperature', 'status': 'warn', 'text': f"Temperature {t:.1f}°C is low. Monitor closely and consider extra heating."})
     else:
-        recs.append({'type': 'temperature', 'status': 'bad',  'text': f"Temperature {t:.1f}°C is low. Provide additional heating."})
+        if t >= tt['crit_high']:
+            recs.append({'type': 'temperature', 'status': 'bad', 'text': f"Temperature {t:.1f}°C is critically high. Open windows immediately to prevent heat stress."})
+        else:
+            recs.append({'type': 'temperature', 'status': 'bad', 'text': f"Temperature {t:.1f}°C is critically low. Provide additional heating immediately."})
 
-    if 50 <= h <= 65:
-        recs.append({'type': 'humidity', 'status': 'good', 'text': f"Humidity {h:.1f}% is within the optimal range (50–65%)."})
-    elif 40 <= h < 50 or 65 < h <= 75:
-        recs.append({'type': 'humidity', 'status': 'warn', 'text': f"Humidity {h:.1f}% is outside optimal range (50–65%). Adjust ventilation."})
-    elif h > 75:
-        recs.append({'type': 'humidity', 'status': 'bad',  'text': f"Humidity {h:.1f}% is critically high. Risk of disease. Ventilate urgently."})
+    hum_state = _raw_state('humidity', h, thresholds)
+    if hum_state == 'good':
+        recs.append({'type': 'humidity', 'status': 'good', 'text': f"Humidity {h:.1f}% is within the optimal range ({th['warn_low']:.0f}–{th['warn_high']:.0f}%)."})
+    elif hum_state == 'warning':
+        recs.append({'type': 'humidity', 'status': 'warn', 'text': f"Humidity {h:.1f}% is outside optimal range ({th['warn_low']:.0f}–{th['warn_high']:.0f}%). Adjust ventilation."})
     else:
-        recs.append({'type': 'humidity', 'status': 'bad',  'text': f"Humidity {h:.1f}% is too low. Use misters or humidifiers."})
+        if h >= th['crit_high']:
+            recs.append({'type': 'humidity', 'status': 'bad', 'text': f"Humidity {h:.1f}% is critically high. Risk of disease. Ventilate urgently."})
+        else:
+            recs.append({'type': 'humidity', 'status': 'bad', 'text': f"Humidity {h:.1f}% is too low. Use misters or humidifiers."})
 
-    if w > 60:
+    water_state = _raw_state('water_level', w, thresholds)
+    if water_state == 'good':
         recs.append({'type': 'water', 'status': 'good', 'text': f"Water level {w:.1f}% is adequate."})
-    elif w > 30:
+    elif water_state == 'warning':
         recs.append({'type': 'water', 'status': 'warn', 'text': f"Water level {w:.1f}% is getting low. Plan to refill soon."})
     else:
-        recs.append({'type': 'water', 'status': 'bad',  'text': f"Water level {w:.1f}% is critically low. Refill immediately — birds can dehydrate within hours."})
+        recs.append({'type': 'water', 'status': 'bad', 'text': f"Water level {w:.1f}% is critically low. Refill immediately — birds can dehydrate within hours."})
 
-    if f > 60:
+    feed_state = _raw_state('feed_level', f, thresholds)
+    if feed_state == 'good':
         recs.append({'type': 'feed', 'status': 'good', 'text': f"Feed level {f:.1f}% is adequate."})
-    elif f > 30:
+    elif feed_state == 'warning':
         recs.append({'type': 'feed', 'status': 'warn', 'text': f"Feed level {f:.1f}% is getting low. Plan to refill soon."})
     else:
-        recs.append({'type': 'feed', 'status': 'bad',  'text': f"Feed level {f:.1f}% is critically low. Refill feeders immediately."})
+        recs.append({'type': 'feed', 'status': 'bad', 'text': f"Feed level {f:.1f}% is critically low. Refill feeders immediately."})
 
     return recs

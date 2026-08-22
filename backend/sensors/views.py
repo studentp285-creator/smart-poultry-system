@@ -77,7 +77,7 @@ def latest_reading(request):
     reading = fs.get_latest_reading()
     if not reading:
         return Response({'detail': 'No readings yet.'}, status=status.HTTP_404_NOT_FOUND)
-    recs = get_recommendations(reading)
+    recs = get_recommendations(reading, fs.get_thresholds())
     return Response({'reading': reading, 'recommendations': recs})
 
 
